@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useId } from 'react';
 import { PieceThemeId, PIECE_THEMES } from '../utils/themes';
 
 export type PieceType = 'p' | 'n' | 'b' | 'r' | 'q' | 'k';
@@ -20,16 +20,29 @@ export const ChessPiece: React.FC<ChessPieceProps> = ({
   const isWhite = color === 'w';
   const themeObj = PIECE_THEMES.find((t) => t.id === pieceTheme) || PIECE_THEMES[0];
 
-  const fill = isWhite ? themeObj.whiteFill : themeObj.blackFill;
+  const gradId = useId().replace(/[^a-zA-Z0-9]/g, '');
+  const baseFill = isWhite ? themeObj.whiteFill : themeObj.blackFill;
+  const highlight = isWhite ? themeObj.whiteHighlight : themeObj.blackHighlight;
+  const fill = `url(#${gradId})`;
   const stroke = isWhite ? themeObj.whiteStroke : themeObj.blackStroke;
   const innerLine = isWhite ? themeObj.whiteStroke : themeObj.blackHighlight;
 
   return (
     <svg
       viewBox="0 0 45 45"
-      className={`${className} transition-transform duration-150 select-none pointer-events-none drop-shadow-md`}
+      className={`${className} transition-transform duration-150 select-none pointer-events-none drop-shadow-[0_2px_2px_rgba(0,0,0,0.45)]`}
       xmlns="http://www.w3.org/2000/svg"
     >
+      <defs>
+        {/* Cylindrical lathe-turned shading: light from upper left, soft core shadow on the right */}
+        <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="0.15">
+          <stop offset="0%" style={{ stopColor: `color-mix(in srgb, ${baseFill} 55%, black)` }} />
+          <stop offset="22%" style={{ stopColor: highlight }} />
+          <stop offset="45%" style={{ stopColor: baseFill }} />
+          <stop offset="78%" style={{ stopColor: `color-mix(in srgb, ${baseFill} 72%, black)` }} />
+          <stop offset="100%" style={{ stopColor: `color-mix(in srgb, ${baseFill} 45%, black)` }} />
+        </linearGradient>
+      </defs>
       {type === 'p' && (
         <g style={{ fill, stroke, strokeWidth: 1.5, strokeLinecap: 'round' }}>
           <path d="m 22.5,9 c -2.21,0 -4,1.79 -4,4 0,0.89 0.29,1.71 0.78,2.38 C 17.33,16.5 16,18.59 16,21 c 0,2.03 0.94,3.84 2.41,5.03 C 15.41,27.09 11,31.58 11,39.5 L 34,39.5 C 34,31.58 29.59,27.09 26.59,26.03 28.06,24.84 29,23.03 29,21 29,18.59 27.67,16.5 25.72,15.38 26.21,14.71 26.5,13.89 26.5,13 c 0,-2.21 -1.79,-4 -4,-4 z" />

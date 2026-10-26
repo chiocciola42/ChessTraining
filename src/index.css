@@ -20,6 +20,15 @@
   user-select: none;
 }
 
+@keyframes chess-piece-settle {
+  from { transform: translateY(-7%); opacity: 0.6; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.chess-piece-settle {
+  animation: chess-piece-settle 160ms ease-out;
+}
+
 /* Safe area insets for notched phones (iPhone X, 11, 12, 13, 14, 15, 16) */
 .pb-safe {
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
