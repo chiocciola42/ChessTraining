@@ -1,6 +1,0 @@
-{
-  "name": "Chess Academy",
-  "description": "L'accademia di scacchi per adulti principianti: impara le regole passo dopo passo, risolvi esercizi interattivi e gioca contro il computer in italiano.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
