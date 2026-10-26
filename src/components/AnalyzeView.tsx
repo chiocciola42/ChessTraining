@@ -223,7 +223,9 @@ export const AnalyzeView: React.FC<AnalyzeViewProps> = ({
           <Chessboard
             fen={currentFen}
             orientation={currentGame.playerColor}
-            showCoordinates={true}
+            boardTheme={progress.profile?.boardTheme}
+            pieceTheme={progress.profile?.pieceTheme}
+            showCoordinates={progress.profile?.showCoordinates ?? true}
             interactive={false}
           />
 

@@ -264,6 +264,9 @@ export const LearnView: React.FC<LearnViewProps> = ({
                 selectedSquare={selectedSquare}
                 legalMoves={legalMoveOptions}
                 highlightSquares={currentStep.highlights}
+                boardTheme={progress.profile?.boardTheme}
+                pieceTheme={progress.profile?.pieceTheme}
+                showCoordinates={progress.profile?.showCoordinates ?? true}
                 onSquareClick={handleSquareClick}
                 onMove={(from, to) => {
                   if (stepCompleted) return;
@@ -271,7 +274,6 @@ export const LearnView: React.FC<LearnViewProps> = ({
                   handleSquareClick(from);
                   handleSquareClick(to);
                 }}
-                showCoordinates={true}
                 interactive={!stepCompleted}
               />
               <div className="mt-2 text-[11px] text-slate-400 text-center">
@@ -357,6 +359,9 @@ export const LearnView: React.FC<LearnViewProps> = ({
               selectedSquare={selectedSquare}
               legalMoves={legalMoveOptions}
               highlightSquares={currentStep.highlights}
+              boardTheme={progress.profile?.boardTheme}
+              pieceTheme={progress.profile?.pieceTheme}
+              showCoordinates={progress.profile?.showCoordinates ?? true}
               onSquareClick={handleSquareClick}
               onMove={(from, to) => {
                 if (stepCompleted) return;
@@ -364,7 +369,6 @@ export const LearnView: React.FC<LearnViewProps> = ({
                 handleSquareClick(from);
                 handleSquareClick(to);
               }}
-              showCoordinates={true}
               interactive={!stepCompleted}
             />
             <div className="mt-3 text-xs text-slate-400 text-center">

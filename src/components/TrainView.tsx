@@ -202,6 +202,9 @@ export const TrainView: React.FC<TrainViewProps> = ({ progress, onUpdateProgress
                 orientation={activePuzzle.playerTurn}
                 selectedSquare={selectedSquare}
                 legalMoves={legalMoveOptions}
+                boardTheme={progress.profile?.boardTheme}
+                pieceTheme={progress.profile?.pieceTheme}
+                showCoordinates={progress.profile?.showCoordinates ?? true}
                 onSquareClick={handleSquareClick}
                 onMove={(from, to) => {
                   if (isSolved) return;
@@ -209,7 +212,6 @@ export const TrainView: React.FC<TrainViewProps> = ({ progress, onUpdateProgress
                   handleSquareClick(from);
                   handleSquareClick(to);
                 }}
-                showCoordinates={true}
                 interactive={!isSolved}
               />
             </div>
@@ -278,6 +280,9 @@ export const TrainView: React.FC<TrainViewProps> = ({ progress, onUpdateProgress
               orientation={activePuzzle.playerTurn}
               selectedSquare={selectedSquare}
               legalMoves={legalMoveOptions}
+              boardTheme={progress.profile?.boardTheme}
+              pieceTheme={progress.profile?.pieceTheme}
+              showCoordinates={progress.profile?.showCoordinates ?? true}
               onSquareClick={handleSquareClick}
               onMove={(from, to) => {
                 if (isSolved) return;
@@ -285,7 +290,6 @@ export const TrainView: React.FC<TrainViewProps> = ({ progress, onUpdateProgress
                 handleSquareClick(from);
                 handleSquareClick(to);
               }}
-              showCoordinates={true}
               interactive={!isSolved}
             />
           </div>

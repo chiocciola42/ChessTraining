@@ -748,7 +748,7 @@ export const PlayView: React.FC<PlayViewProps> = ({
               {(playerColor === 'w' ? capturedPieces.blackLost : capturedPieces.whiteLost).map(
                 (pType, idx) => (
                   <div key={idx} className="w-5 h-5 opacity-90">
-                    <ChessPiece type={pType} color={playerColor === 'w' ? 'b' : 'w'} />
+                    <ChessPiece type={pType} color={playerColor === 'w' ? 'b' : 'w'} pieceTheme={progress.profile?.pieceTheme} />
                   </div>
                 )
               )}
@@ -765,6 +765,9 @@ export const PlayView: React.FC<PlayViewProps> = ({
             checkSquare={checkSquare}
             threatenedSquares={threatenedSquares}
             suggestedMove={suggestedMove}
+            boardTheme={progress.profile?.boardTheme}
+            pieceTheme={progress.profile?.pieceTheme}
+            showCoordinates={progress.profile?.showCoordinates ?? true}
             onSquareClick={handleSquareClick}
             onMove={(from, to) => {
               if (isGameOver || isThinking) return;
@@ -785,21 +788,20 @@ export const PlayView: React.FC<PlayViewProps> = ({
               }
               executePlayerMove(from, to);
             }}
-            showCoordinates={true}
             interactive={!isGameOver && !isThinking}
           />
 
           {/* Player Captured row */}
           <div className="w-full max-w-[520px] flex items-center justify-between px-2 text-xs">
             <span className="font-bold text-amber-300">
-              Tu ({playerColor === 'w' ? 'Bianchi ⚪' : 'Neri ⚫'})
+              {progress.profile?.name || 'Tu'} ({playerColor === 'w' ? 'Bianchi ⚪' : 'Neri ⚫'})
             </span>
             {/* Captured by opponent */}
             <div className="flex items-center gap-0.5 h-6">
               {(playerColor === 'w' ? capturedPieces.whiteLost : capturedPieces.blackLost).map(
                 (pType, idx) => (
                   <div key={idx} className="w-5 h-5 opacity-90">
-                    <ChessPiece type={pType} color={playerColor === 'w' ? 'w' : 'b'} />
+                    <ChessPiece type={pType} color={playerColor === 'w' ? 'w' : 'b'} pieceTheme={progress.profile?.pieceTheme} />
                   </div>
                 )
               )}

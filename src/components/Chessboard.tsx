@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { Chessboard as ReactChessboard } from 'react-chessboard';
 import { Chess, Square } from 'chess.js';
+import { ChessPiece } from './ChessPiece';
+import { BoardThemeId, PieceThemeId, BOARD_THEMES } from '../utils/themes';
 
 export interface MoveOption {
   to: string;
@@ -19,6 +21,12 @@ export interface ChessBoardProps {
    * Perspective: 'w' (White on bottom) or 'b' (Black on bottom)
    */
   orientation?: 'w' | 'b';
+
+  /**
+   * Visual themes
+   */
+  boardTheme?: BoardThemeId;
+  pieceTheme?: PieceThemeId;
 
   /**
    * Current selected square (if externally controlled)
@@ -86,6 +94,8 @@ export const Chessboard: React.FC<ChessBoardProps> = ({
   game,
   fen,
   orientation = 'w',
+  boardTheme = 'wood',
+  pieceTheme = 'staunton',
   selectedSquare: externalSelectedSquare,
   legalMoves: externalLegalMoves,
   lastMove,
@@ -102,6 +112,11 @@ export const Chessboard: React.FC<ChessBoardProps> = ({
   // Internal state for selected square when not controlled externally
   const [internalSelectedSquare, setInternalSelectedSquare] = useState<string | null>(null);
   const selectedSquare = externalSelectedSquare !== undefined ? externalSelectedSquare : internalSelectedSquare;
+
+  // Selected board theme configuration
+  const currentBoardTheme = useMemo(() => {
+    return BOARD_THEMES.find((t) => t.id === boardTheme) || BOARD_THEMES[0];
+  }, [boardTheme]);
 
   // Active FEN string
   const currentFen = useMemo(() => {
@@ -239,6 +254,24 @@ export const Chessboard: React.FC<ChessBoardProps> = ({
     activeLegalMoves,
   ]);
 
+  // Custom themed piece rendering for react-chessboard
+  const customPieces = useMemo(() => {
+    return {
+      wP: () => <ChessPiece type="p" color="w" pieceTheme={pieceTheme} />,
+      wN: () => <ChessPiece type="n" color="w" pieceTheme={pieceTheme} />,
+      wB: () => <ChessPiece type="b" color="w" pieceTheme={pieceTheme} />,
+      wR: () => <ChessPiece type="r" color="w" pieceTheme={pieceTheme} />,
+      wQ: () => <ChessPiece type="q" color="w" pieceTheme={pieceTheme} />,
+      wK: () => <ChessPiece type="k" color="w" pieceTheme={pieceTheme} />,
+      bP: () => <ChessPiece type="p" color="b" pieceTheme={pieceTheme} />,
+      bN: () => <ChessPiece type="n" color="b" pieceTheme={pieceTheme} />,
+      bB: () => <ChessPiece type="b" color="b" pieceTheme={pieceTheme} />,
+      bR: () => <ChessPiece type="r" color="b" pieceTheme={pieceTheme} />,
+      bQ: () => <ChessPiece type="q" color="b" pieceTheme={pieceTheme} />,
+      bK: () => <ChessPiece type="k" color="b" pieceTheme={pieceTheme} />,
+    };
+  }, [pieceTheme]);
+
   // Handle Drag-and-Drop Piece Drop
   const handlePieceDrop = useCallback(
     ({ sourceSquare, targetSquare }: { piece: any; sourceSquare: string; targetSquare: string | null }): boolean => {
@@ -250,7 +283,6 @@ export const Chessboard: React.FC<ChessBoardProps> = ({
         const isLegal = legal.some((m) => m.to === targetSquare);
 
         if (!isLegal) {
-          // If custom move or tutorial expectedMove matches, permit it
           if (!onMove) {
             return false;
           }
@@ -324,6 +356,7 @@ export const Chessboard: React.FC<ChessBoardProps> = ({
             dragActivationDistance: 3,
             allowDragOffBoard: false,
             squareStyles,
+            pieces: customPieces,
             onPieceDrop: handlePieceDrop,
             onPieceDrag: handlePieceDragBegin,
             onSquareClick: handleSquareClick,
@@ -332,18 +365,18 @@ export const Chessboard: React.FC<ChessBoardProps> = ({
               borderRadius: '0.65rem',
             },
             darkSquareStyle: {
-              backgroundColor: '#936c4b',
+              backgroundColor: currentBoardTheme.darkColor,
             },
             lightSquareStyle: {
-              backgroundColor: '#ebd7b2',
+              backgroundColor: currentBoardTheme.lightColor,
             },
             darkSquareNotationStyle: {
-              color: '#ebd7b2',
+              color: currentBoardTheme.darkNotation,
               fontWeight: 700,
               fontSize: '10px',
             },
             lightSquareNotationStyle: {
-              color: '#936c4b',
+              color: currentBoardTheme.lightNotation,
               fontWeight: 700,
               fontSize: '10px',
             },

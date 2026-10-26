@@ -14,10 +14,11 @@ import {
 } from 'lucide-react';
 import { UserProgress } from '../utils/storage';
 import { LEVELS } from '../data/lessons';
+import { Palette, User } from 'lucide-react';
 
 interface HomeViewProps {
   progress: UserProgress;
-  onNavigate: (tab: 'home' | 'learn' | 'train' | 'play' | 'analyze' | 'progress') => void;
+  onNavigate: (tab: 'home' | 'learn' | 'train' | 'play' | 'analyze' | 'progress' | 'profile') => void;
   onStartLesson: (lessonId: string) => void;
   onQuickPlay: () => void;
 }
@@ -37,6 +38,8 @@ export const HomeView: React.FC<HomeViewProps> = ({
   const completedCount = progress.completedLessonIds.length;
   const completionPercent = Math.round((completedCount / totalLessons) * 100);
 
+  const profile = progress.profile;
+
   return (
     <div className="space-y-6 max-w-4xl mx-auto pb-12">
       {/* Hero Welcome Banner */}
@@ -48,11 +51,15 @@ export const HomeView: React.FC<HomeViewProps> = ({
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-semibold tracking-wide">
               <Sparkles className="w-3.5 h-3.5" />
-              <span>Scacchi per Adulti • Passo dopo Passo</span>
+              <span>{profile?.title || 'Scacchi per Adulti • Passo dopo Passo'}</span>
             </div>
-            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-white tracking-tight font-serif">
-              Bentornato alla <span className="text-amber-400">Chess Academy</span>
+            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-white tracking-tight font-serif flex items-center gap-2.5 flex-wrap">
+              <span>Bentornato, {profile?.name || 'Giocatore'}</span>
+              <span className="text-3xl sm:text-4xl drop-shadow-md select-none">{profile?.avatar || '♞'}</span>
             </h1>
+            <p className="text-xs sm:text-sm text-slate-300 max-w-lg">
+              Pronto a continuare? Fai una mossa oggi: una breve lezione di 5 minuti o una partita senza pressione.
+            </p>
           </div>
 
           {/* Quick Dual CTAs */}
@@ -276,7 +283,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
           {/* Card 5: Progressi */}
           <div
             onClick={() => onNavigate('progress')}
-            className="group relative rounded-2xl bg-slate-900/70 border border-slate-800 hover:border-amber-500/50 p-5 cursor-pointer transition-all duration-200 hover:-translate-y-0.5 shadow-lg md:col-span-2"
+            className="group relative rounded-2xl bg-slate-900/70 border border-slate-800 hover:border-amber-500/50 p-5 cursor-pointer transition-all duration-200 hover:-translate-y-0.5 shadow-lg"
           >
             <div className="flex items-start gap-4">
               <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0 group-hover:scale-105 transition-transform">
@@ -290,8 +297,37 @@ export const HomeView: React.FC<HomeViewProps> = ({
                   <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-amber-400 transition" />
                 </div>
                 <p className="text-xs sm:text-sm text-slate-400 mt-1 leading-relaxed">
-                  Monitora le competenze assimilate, la percentuale di padronanza dei concetti, i trofei sbloccati e le statistiche complessive.
+                  Monitora le competenze assimilate, la padronanza dei concetti, i trofei e le statistiche.
                 </p>
+                <div className="mt-3 flex items-center gap-2 text-xs font-semibold text-amber-400">
+                  <span>Vedi Competenze</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 6: Il Mio Profilo & Temi */}
+          <div
+            onClick={() => onNavigate('profile')}
+            className="group relative rounded-2xl bg-slate-900/70 border border-slate-800 hover:border-indigo-500/50 p-5 cursor-pointer transition-all duration-200 hover:-translate-y-0.5 shadow-lg"
+          >
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 shrink-0 group-hover:scale-105 transition-transform">
+                <Palette className="w-6 h-6" />
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-base font-bold text-white group-hover:text-indigo-300 transition-colors">
+                    6. Il Mio Profilo & Temi
+                  </h3>
+                  <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 transition" />
+                </div>
+                <p className="text-xs sm:text-sm text-slate-400 mt-1 leading-relaxed">
+                  Personalizza nome, avatar ({profile?.avatar || '♞'}), tema Giorno/Notte, 6 stili di scacchiera e 4 design dei pezzi.
+                </p>
+                <div className="mt-3 flex items-center gap-2 text-xs font-semibold text-indigo-400">
+                  <span>Personalizza Scacchiera & Stile</span>
+                </div>
               </div>
             </div>
           </div>
