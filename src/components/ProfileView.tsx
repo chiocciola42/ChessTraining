@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   User,
   Sun,
@@ -38,6 +38,8 @@ interface ProfileViewProps {
   onResetPreferences?: () => void;
 }
 
+const TOAST_DURATION_MS = 2000;
+
 export const ProfileView: React.FC<ProfileViewProps> = ({
   progress,
   onUpdateProfile,
@@ -48,6 +50,15 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   const [nameInput, setNameInput] = useState(profile.name);
   const [saveToast, setSaveToast] = useState(false);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Release the pending toast timer on unmount
+  useEffect(
+    () => () => {
+      if (toastTimer.current !== null) clearTimeout(toastTimer.current);
+    },
+    []
+  );
 
   const handleNameSave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,7 +120,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   const showToast = () => {
     setSaveToast(true);
-    setTimeout(() => setSaveToast(false), 2000);
+    if (toastTimer.current !== null) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setSaveToast(false), TOAST_DURATION_MS);
   };
 
   const favoritePiecesList = [

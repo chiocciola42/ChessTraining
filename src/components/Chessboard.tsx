@@ -2,6 +2,7 @@ import { createPortal } from 'react-dom';
 import React, { useState, useMemo, useCallback, useRef } from 'react';
 import { Chess, Square } from 'chess.js';
 import { ChessPiece, PieceType, PieceColor } from './ChessPiece';
+import { findKingSquare } from '../utils/chessEngine';
 import { BoardThemeId, PieceThemeId, BOARD_THEMES } from '../utils/themes';
 
 export interface MoveOption {
@@ -165,18 +166,7 @@ export const Chessboard: React.FC<ChessBoardProps> = ({
   const autoCheckSquare = useMemo(() => {
     if (externalCheckSquare !== undefined) return externalCheckSquare;
     if (!chessInstance || !chessInstance.isCheck()) return null;
-
-    const board = chessInstance.board();
-    const turn = chessInstance.turn();
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        const p = board[r][c];
-        if (p && p.type === 'k' && p.color === turn) {
-          return `${String.fromCharCode(97 + c)}${8 - r}`;
-        }
-      }
-    }
-    return null;
+    return findKingSquare(chessInstance, chessInstance.turn());
   }, [externalCheckSquare, chessInstance]);
 
   // Build custom square styles dictionary for react-chessboard

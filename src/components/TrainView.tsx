@@ -15,7 +15,8 @@ import { Chessboard, MoveOption } from './Chessboard';
 import { PUZZLES, Puzzle } from '../data/puzzles';
 import { UserProgress } from '../utils/storage';
 import { sound } from '../utils/sound';
-import { Chess } from 'chess.js';
+import { Chess, Square } from 'chess.js';
+import { getLegalMoveOptions } from '../utils/chessEngine';
 
 interface TrainViewProps {
   progress: UserProgress;
@@ -59,20 +60,7 @@ export const TrainView: React.FC<TrainViewProps> = ({ progress, onUpdateProgress
     : PUZZLES.filter((p) => p.category === selectedCategory);
 
   // Compute legal moves for selected piece
-  let legalMoveOptions: MoveOption[] = [];
-  try {
-    if (currentFen && selectedSquare) {
-      const tempGame = new Chess(currentFen);
-      const moves = tempGame.moves({ square: selectedSquare as any, verbose: true });
-      legalMoveOptions = moves.map((m) => ({
-        to: m.to,
-        isCapture: !!m.captured,
-        san: m.san,
-      }));
-    }
-  } catch {
-    // Ignore invalid FEN test states
-  }
+  const legalMoveOptions: MoveOption[] = getLegalMoveOptions(currentFen, selectedSquare);
 
   const handleSquareClick = (square: string) => {
     if (isSolved || !activePuzzle) return;
@@ -94,12 +82,13 @@ export const TrainView: React.FC<TrainViewProps> = ({ progress, onUpdateProgress
       if (isExpected) {
         try {
           const game = new Chess(currentFen);
-          const isCapture = !!game.get(square as any);
-          game.move({ from: selectedSquare as any, to: square as any, promotion: 'q' });
+          const isCapture = !!game.get(square as Square);
+          game.move({ from: selectedSquare as Square, to: square as Square, promotion: 'q' });
           setCurrentFen(game.fen());
           if (isCapture) sound.playCapture();
           else sound.playMove();
-        } catch {
+        } catch (e) {
+          console.warn(`Puzzle ${activePuzzle.id}: expected move is not playable from its FEN`, e);
           sound.playMove();
         }
 

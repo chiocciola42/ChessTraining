@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   BookOpen,
   Target,
@@ -11,8 +11,6 @@ import {
   User,
   Sun,
   Moon,
-  Palette,
-  Sparkles,
 } from 'lucide-react';
 import { HomeView } from './components/HomeView';
 import { LearnView } from './components/LearnView';
@@ -29,8 +27,11 @@ import {
   SavedGame,
   loadUserProgress,
   saveUserProgress,
+  resetUserProgress,
 } from './utils/storage';
 import { sound } from './utils/sound';
+
+const ACTIVITY_TICK_MS = 60_000;
 
 export type NavTab = 'home' | 'learn' | 'train' | 'play' | 'analyze' | 'progress' | 'profile';
 
@@ -43,14 +44,22 @@ export default function App() {
 
   const isDay = progress.profile?.themeMode === 'day';
 
-  // Sync progress to LocalStorage
-  const handleUpdateProgress = (updater: (prev: UserProgress) => UserProgress) => {
-    setProgress((prev) => {
-      const next = updater(prev);
-      saveUserProgress(next);
-      return next;
-    });
-  };
+  // Persist every progress change (kept out of the state updater so it stays pure)
+  useEffect(() => {
+    saveUserProgress(progress);
+  }, [progress]);
+
+  // Apply the persisted sound preference to the audio engine on startup
+  useEffect(() => {
+    sound.setEnabled(soundEnabled);
+  }, [soundEnabled]);
+
+  const handleUpdateProgress = useCallback(
+    (updater: (prev: UserProgress) => UserProgress) => {
+      setProgress(updater);
+    },
+    []
+  );
 
   // Profile-specific updater
   const handleUpdateProfile = (updater: (prevProfile: UserProfile) => UserProfile) => {
@@ -83,9 +92,9 @@ export default function App() {
         ...prev,
         totalTimeMinutes: prev.totalTimeMinutes + 1,
       }));
-    }, 60000);
+    }, ACTIVITY_TICK_MS);
     return () => clearInterval(timer);
-  }, []);
+  }, [handleUpdateProgress]);
 
   // Handlers for cross-section navigation
   const handleStartLesson = (lessonId: string) => {
@@ -107,9 +116,9 @@ export default function App() {
   };
 
   const handleResetProgress = () => {
-    localStorage.clear();
-    const fresh = loadUserProgress();
+    const fresh = resetUserProgress();
     setProgress(fresh);
+    setSoundEnabled(fresh.profile.soundEnabled);
     sound.playMove();
   };
 

@@ -1,4 +1,4 @@
-import { Chess, Square } from 'chess.js';
+import { Chess, Move, Square } from 'chess.js';
 
 // Piece values in centipawns
 export const PIECE_VALUES: Record<string, number> = {
@@ -18,6 +18,81 @@ export const ITALIAN_PIECE_NAMES: Record<string, string> = {
   q: 'donna (regina)',
   k: 're',
 };
+
+export interface LegalMoveOption {
+  to: string;
+  isCapture: boolean;
+  san: string;
+}
+
+const BOARD_SIZE = 8;
+const MAX_SEARCH_DEPTH = 6;
+
+/** Algebraic name of the square at board row `r` (0 = rank 8) and column `c` (0 = file a). */
+export function squareName(r: number, c: number): Square {
+  return `${String.fromCharCode(97 + c)}${BOARD_SIZE - r}` as Square;
+}
+
+/** Square of the king of the given colour, or null if absent (e.g. incomplete tutorial boards). */
+export function findKingSquare(game: Chess, color: 'w' | 'b'): Square | null {
+  const board = game.board();
+  for (let r = 0; r < BOARD_SIZE; r++) {
+    for (let c = 0; c < BOARD_SIZE; c++) {
+      const piece = board[r][c];
+      if (piece && piece.type === 'k' && piece.color === color) return squareName(r, c);
+    }
+  }
+  return null;
+}
+
+/** Legal moves of the piece on `square` in the position `fen`; empty for invalid input. */
+export function getLegalMoveOptions(fen: string, square: string | null): LegalMoveOption[] {
+  if (!fen || !square) return [];
+  try {
+    const moves = new Chess(fen).moves({ square: square as Square, verbose: true });
+    return moves.map((m) => ({ to: m.to, isCapture: !!m.captured, san: m.san }));
+  } catch {
+    // Tutorial boards may use incomplete FENs (e.g. a single king): no moves to show.
+    return [];
+  }
+}
+
+/** Material points (pawn = 1) for each side, kings excluded. */
+export function getMaterialDifference(game: Chess): number {
+  let diff = 0;
+  for (const row of game.board()) {
+    for (const p of row) {
+      if (!p || p.type === 'k') continue;
+      const value = PIECE_VALUES[p.type] ?? 0;
+      diff += p.color === 'w' ? value : -value;
+    }
+  }
+  return diff / 100;
+}
+
+/** Pieces each side has lost compared to the starting setup (kings excluded). */
+export function getLostPieces(game: Chess): { whiteLost: string[]; blackLost: string[] } {
+  const initial: Record<string, number> = { p: 8, n: 2, b: 2, r: 2, q: 1 };
+  const present: Record<string, number> = {};
+  for (const row of game.board()) {
+    for (const p of row) {
+      if (p && p.type !== 'k') {
+        const key = `${p.color}${p.type}`;
+        present[key] = (present[key] ?? 0) + 1;
+      }
+    }
+  }
+
+  const whiteLost: string[] = [];
+  const blackLost: string[] = [];
+  for (const type of Object.keys(initial)) {
+    const wDeficit = initial[type] - (present[`w${type}`] ?? 0);
+    const bDeficit = initial[type] - (present[`b${type}`] ?? 0);
+    for (let i = 0; i < wDeficit; i++) whiteLost.push(type);
+    for (let i = 0; i < bDeficit; i++) blackLost.push(type);
+  }
+  return { whiteLost, blackLost };
+}
 
 // Simplified piece-square tables for positional understanding
 const PAWN_TABLE = [
@@ -86,11 +161,18 @@ const KING_TABLE_MID = [
   20, 30, 10,  0,  0, 10, 30, 20,
 ];
 
-function getSquareIndex(sq: string, isWhite: boolean): number {
-  const file = sq.charCodeAt(0) - 97; // 0 to 7
-  const rank = 8 - parseInt(sq[1], 10); // 0 to 7 (rank 8 is 0, rank 1 is 7)
-  const idx = rank * 8 + file;
-  return isWhite ? idx : (7 - rank) * 8 + file;
+const PIECE_SQUARE_TABLES: Record<string, number[]> = {
+  p: PAWN_TABLE,
+  n: KNIGHT_TABLE,
+  b: BISHOP_TABLE,
+  r: ROOK_TABLE,
+  q: QUEEN_TABLE,
+  k: KING_TABLE_MID,
+};
+
+/** Index into a white-oriented piece-square table (mirrored vertically for black). */
+function getSquareIndex(r: number, c: number, isWhite: boolean): number {
+  return (isWhite ? r : BOARD_SIZE - 1 - r) * BOARD_SIZE + c;
 }
 
 export function evaluateBoard(game: Chess): number {
@@ -104,30 +186,16 @@ export function evaluateBoard(game: Chess): number {
   let score = 0;
   const board = game.board();
 
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
+  for (let r = 0; r < BOARD_SIZE; r++) {
+    for (let c = 0; c < BOARD_SIZE; c++) {
       const piece = board[r][c];
       if (!piece) continue;
 
-      const val = PIECE_VALUES[piece.type] || 0;
-      const sq = `${String.fromCharCode(97 + c)}${8 - r}`;
       const isWhite = piece.color === 'w';
-      const idx = getSquareIndex(sq, isWhite);
-
-      let psqt = 0;
-      if (piece.type === 'p') psqt = PAWN_TABLE[idx] || 0;
-      else if (piece.type === 'n') psqt = KNIGHT_TABLE[idx] || 0;
-      else if (piece.type === 'b') psqt = BISHOP_TABLE[idx] || 0;
-      else if (piece.type === 'r') psqt = ROOK_TABLE[idx] || 0;
-      else if (piece.type === 'q') psqt = QUEEN_TABLE[idx] || 0;
-      else if (piece.type === 'k') psqt = KING_TABLE_MID[idx] || 0;
-
-      const totalVal = val + psqt;
-      if (isWhite) {
-        score += totalVal;
-      } else {
-        score -= totalVal;
-      }
+      const table = PIECE_SQUARE_TABLES[piece.type];
+      const positional = table?.[getSquareIndex(r, c, isWhite)] ?? 0;
+      const totalVal = (PIECE_VALUES[piece.type] ?? 0) + positional;
+      score += isWhite ? totalVal : -totalVal;
     }
   }
 
@@ -142,8 +210,11 @@ function minimax(
   beta: number,
   isMaximizing: boolean
 ): { score: number; bestMoveSAN?: string } {
-  if (depth === 0 || game.isGameOver()) {
+  if (depth <= 0 || game.isGameOver()) {
     return { score: evaluateBoard(game) };
+  }
+  if (depth > MAX_SEARCH_DEPTH) {
+    throw new RangeError(`Search depth ${depth} exceeds the maximum of ${MAX_SEARCH_DEPTH}`);
   }
 
   const moves = game.moves({ verbose: true });
@@ -190,80 +261,86 @@ export interface EngineMoveResult {
   explanation?: string;
 }
 
+type VerboseMove = Move;
+
+function listMoves(game: Chess): VerboseMove[] {
+  return game.moves({ verbose: true });
+}
+
+function toResult(move: VerboseMove, explanation: string): EngineMoveResult {
+  return { from: move.from, to: move.to, san: move.san, explanation };
+}
+
+function pickRandom<T>(items: ReadonlyArray<T>): T {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+/** Best move found by a fixed-depth search (falls back to the first legal move). */
+function searchBestMove(game: Chess, moves: VerboseMove[], depth: number): VerboseMove {
+  const result = minimax(game, depth, -Infinity, Infinity, game.turn() === 'w');
+  return moves.find((m) => m.san === result.bestMoveSAN) ?? moves[0];
+}
+
+/** Greedy one-ply evaluation. */
+function bestOnePlyMove(game: Chess, moves: VerboseMove[]): VerboseMove {
+  const isWhite = game.turn() === 'w';
+  let bestMove = moves[0];
+  let bestScore = isWhite ? -Infinity : Infinity;
+  for (const m of moves) {
+    game.move(m);
+    const score = evaluateBoard(game);
+    game.undo();
+    if (isWhite ? score > bestScore : score < bestScore) {
+      bestScore = score;
+      bestMove = m;
+    }
+  }
+  return bestMove;
+}
+
+function levelOneMove(moves: VerboseMove[]): EngineMoveResult {
+  const captures = moves.filter((m) => m.captured);
+  if (captures.length > 0 && Math.random() < 0.4) {
+    return toResult(pickRandom(captures), 'Mossa semplice di cattura');
+  }
+  return toResult(pickRandom(moves), 'Mossa esplorativa');
+}
+
+function levelTwoMove(game: Chess, moves: VerboseMove[]): EngineMoveResult {
+  if (Math.random() < 0.45) return toResult(pickRandom(moves), 'Mossa istintiva');
+  return toResult(bestOnePlyMove(game, moves), 'Sviluppa e cerca materiale');
+}
+
+function levelThreeMove(game: Chess, moves: VerboseMove[]): EngineMoveResult {
+  if (Math.random() < 0.25) {
+    const preferred = moves.filter((m) => m.captured || m.piece === 'n' || m.piece === 'b');
+    const pool = preferred.length > 0 ? preferred : moves;
+    return toResult(pickRandom(pool), 'Protezione e posizionamento');
+  }
+  return toResult(searchBestMove(game, moves, 2), 'Sviluppo armonico e difesa dei pezzi');
+}
+
+const SEARCH_LEVELS: Record<number, { depth: number; explanation: string }> = {
+  4: { depth: 2, explanation: 'Controllo del centro e coordinazione' },
+  5: { depth: 3, explanation: 'Strategia attiva e pressione tattica' },
+  6: { depth: 4, explanation: 'Calcolo profondo e massima precisione' },
+};
+
 /**
- * Calculates computer move tailored to 6 beginner-to-advanced levels
+ * Calculates computer move tailored to 6 beginner-to-advanced levels.
+ * Levels outside 1..6 are clamped to the nearest valid level.
  */
 export function getComputerMove(game: Chess, level: number): EngineMoveResult | null {
-  const moves = game.moves({ verbose: true });
+  const moves = listMoves(game);
   if (moves.length === 0) return null;
 
-  const isWhite = game.turn() === 'w';
+  const lvl = Math.min(6, Math.max(1, Math.round(level) || 1));
+  if (lvl === 1) return levelOneMove(moves);
+  if (lvl === 2) return levelTwoMove(game, moves);
+  if (lvl === 3) return levelThreeMove(game, moves);
 
-  // Level 1: Principiante assoluto (Blunder frequently, random or simple moves)
-  if (level === 1) {
-    // 70% random move, 30% random capture if available
-    const captures = moves.filter((m) => m.captured);
-    if (captures.length > 0 && Math.random() < 0.4) {
-      const chosen = captures[Math.floor(Math.random() * captures.length)];
-      return { from: chosen.from, to: chosen.to, san: chosen.san, explanation: 'Mossa semplice di cattura' };
-    }
-    const chosen = moves[Math.floor(Math.random() * moves.length)];
-    return { from: chosen.from, to: chosen.to, san: chosen.san, explanation: 'Mossa esplorativa' };
-  }
-
-  // Level 2: Principiante (Basic piece development, occasionally blunders)
-  if (level === 2) {
-    if (Math.random() < 0.45) {
-      const chosen = moves[Math.floor(Math.random() * moves.length)];
-      return { from: chosen.from, to: chosen.to, san: chosen.san, explanation: 'Mossa istintiva' };
-    }
-    // 1-ply evaluation
-    let bestMove = moves[0];
-    let bestScore = isWhite ? -Infinity : Infinity;
-    for (const m of moves) {
-      game.move(m);
-      const score = evaluateBoard(game);
-      game.undo();
-      if (isWhite ? score > bestScore : score < bestScore) {
-        bestScore = score;
-        bestMove = m;
-      }
-    }
-    return { from: bestMove.from, to: bestMove.to, san: bestMove.san, explanation: 'Sviluppa e cerca materiale' };
-  }
-
-  // Level 3: Facile (Depth 2 minimax with light randomness)
-  if (level === 3) {
-    if (Math.random() < 0.25) {
-      // Pick a random safe capture or advance
-      const safeMoves = moves.filter((m) => m.captured || m.piece === 'n' || m.piece === 'b');
-      const pool = safeMoves.length > 0 ? safeMoves : moves;
-      const chosen = pool[Math.floor(Math.random() * pool.length)];
-      return { from: chosen.from, to: chosen.to, san: chosen.san, explanation: 'Protezione e posizionamento' };
-    }
-    const result = minimax(game, 2, -Infinity, Infinity, isWhite);
-    const chosen = moves.find((m) => m.san === result.bestMoveSAN) || moves[0];
-    return { from: chosen.from, to: chosen.to, san: chosen.san, explanation: 'Sviluppo armonico e difesa dei pezzi' };
-  }
-
-  // Level 4: Intermedio (Depth 2-3 solid minimax)
-  if (level === 4) {
-    const result = minimax(game, 2, -Infinity, Infinity, isWhite);
-    const chosen = moves.find((m) => m.san === result.bestMoveSAN) || moves[0];
-    return { from: chosen.from, to: chosen.to, san: chosen.san, explanation: 'Controllo del centro e coordinazione' };
-  }
-
-  // Level 5: Avanzato (Depth 3 search)
-  if (level === 5) {
-    const result = minimax(game, 3, -Infinity, Infinity, isWhite);
-    const chosen = moves.find((m) => m.san === result.bestMoveSAN) || moves[0];
-    return { from: chosen.from, to: chosen.to, san: chosen.san, explanation: 'Strategia attiva e pressione tattica' };
-  }
-
-  // Level 6: Esperto (Depth 4 search)
-  const result = minimax(game, 4, -Infinity, Infinity, isWhite);
-  const chosen = moves.find((m) => m.san === result.bestMoveSAN) || moves[0];
-  return { from: chosen.from, to: chosen.to, san: chosen.san, explanation: 'Calcolo profondo e massima precisione' };
+  const { depth, explanation } = SEARCH_LEVELS[lvl];
+  return toResult(searchBestMove(game, moves, depth), explanation);
 }
 
 /**
@@ -271,27 +348,19 @@ export function getComputerMove(game: Chess, level: number): EngineMoveResult | 
  */
 export function getThreatenedSquares(game: Chess, playerColor: 'w' | 'b'): string[] {
   const opponentColor = playerColor === 'w' ? 'b' : 'w';
-  const threatened = new Set<string>();
+  const threatened: string[] = [];
+  const board = game.board();
 
-  // Clone game to check opponent moves
-  const temp = new Chess(game.fen());
-  // If it's player's turn, opponent attacks can be checked by simulating passing or checking captures
-  const board = temp.board();
-
-  // Test every player piece square: can opponent capture it?
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
+  for (let r = 0; r < BOARD_SIZE; r++) {
+    for (let c = 0; c < BOARD_SIZE; c++) {
       const piece = board[r][c];
-      if (piece && piece.color === playerColor) {
-        const sq = `${String.fromCharCode(97 + c)}${8 - r}` as Square;
-        if (temp.isAttacked(sq, opponentColor)) {
-          threatened.add(sq);
-        }
-      }
+      if (!piece || piece.color !== playerColor) continue;
+      const sq = squareName(r, c);
+      if (game.isAttacked(sq, opponentColor)) threatened.push(sq);
     }
   }
 
-  return Array.from(threatened);
+  return threatened;
 }
 
 /**

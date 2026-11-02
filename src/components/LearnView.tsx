@@ -16,7 +16,8 @@ import { Chessboard, MoveOption } from './Chessboard';
 import { LEVELS, Lesson, Level, LessonStep } from '../data/lessons';
 import { UserProgress } from '../utils/storage';
 import { sound } from '../utils/sound';
-import { Chess } from 'chess.js';
+import { Chess, Square } from 'chess.js';
+import { getLegalMoveOptions } from '../utils/chessEngine';
 
 interface LearnViewProps {
   progress: UserProgress;
@@ -67,20 +68,7 @@ export const LearnView: React.FC<LearnViewProps> = ({
   }, [currentStep]);
 
   // Compute legal moves on interactive step if a piece is selected
-  let legalMoveOptions: MoveOption[] = [];
-  try {
-    if (currentFen && selectedSquare) {
-      const tempGame = new Chess(currentFen);
-      const moves = tempGame.moves({ square: selectedSquare as any, verbose: true });
-      legalMoveOptions = moves.map((m) => ({
-        to: m.to,
-        isCapture: !!m.captured,
-        san: m.san,
-      }));
-    }
-  } catch {
-    // FEN might be an incomplete test board (e.g. only 1 king), ignore errors
-  }
+  const legalMoveOptions: MoveOption[] = getLegalMoveOptions(currentFen, selectedSquare);
 
   const handleSquareClick = (square: string) => {
     if (stepCompleted || !currentStep) return;
@@ -125,13 +113,14 @@ export const LearnView: React.FC<LearnViewProps> = ({
           // Play move on board
           try {
             const game = new Chess(currentFen);
-            const isCapture = !!game.get(square as any);
-            game.move({ from: selectedSquare as any, to: square as any, promotion: 'q' });
+            const isCapture = !!game.get(square as Square);
+            game.move({ from: selectedSquare as Square, to: square as Square, promotion: 'q' });
             setCurrentFen(game.fen());
             if (isCapture) sound.playCapture();
             else sound.playMove();
-          } catch {
+          } catch (e) {
             // Manual fallback for custom position
+            console.warn('Lesson step: expected move is not playable, using demonstration FEN', e);
             setCurrentFen(currentStep.demonstrationFen);
             sound.playMove();
           }

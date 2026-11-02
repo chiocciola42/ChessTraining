@@ -1,39 +1,104 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import confetti from 'canvas-confetti';
 import {
-  Swords,
   RotateCcw,
   Flag,
-  HelpCircle,
   Lightbulb,
-  ShieldAlert,
-  Sliders,
-  Play,
   Award,
-  Sparkles,
-  ChevronRight,
-  Eye,
   AlertTriangle,
   RefreshCw,
 } from 'lucide-react';
 import { Chessboard, MoveOption } from './Chessboard';
+import { PlaySetup } from './PlaySetup';
 import { Chess, Square } from 'chess.js';
 import {
   getComputerMove,
   getThreatenedSquares,
   getTutorHint,
   analyzeMoveQuality,
-  PIECE_VALUES,
-  ITALIAN_PIECE_NAMES,
+  findKingSquare,
+  getLostPieces,
+  getMaterialDifference,
 } from '../utils/chessEngine';
 import { sound } from '../utils/sound';
-import { SavedGame, UserProgress } from '../utils/storage';
+import {
+  SavedGame,
+  UserProgress,
+  ActiveGameState,
+  loadActiveGame,
+  saveActiveGame,
+  clearActiveGame,
+} from '../utils/storage';
 import { ChessPiece, PieceType } from './ChessPiece';
 
 interface PlayViewProps {
   progress: UserProgress;
   onUpdateProgress: (updater: (prev: UserProgress) => UserProgress) => void;
   onAnalyzeGame: (game: SavedGame) => void;
+}
+
+type GameMode = SavedGame['mode'];
+type Side = 'w' | 'b';
+type FinishedResult = 'win' | 'loss' | 'draw';
+
+/** Everything needed to play and record one game; passed explicitly so async callbacks never read stale state. */
+interface GameContext {
+  mode: GameMode;
+  level: number;
+  playerColor: Side;
+  moves: string[];
+  fens: string[];
+}
+
+const COMPUTER_THINK_MIN_MS = 400;
+const COMPUTER_THINK_JITTER_MS = 300;
+const COMPUTER_OPENING_DELAY_MS = 600;
+const MAX_SAVED_GAMES = 20;
+const BLUNDER_GUARDED_MODES: ReadonlyArray<GameMode> = ['assisted', 'didactic'];
+
+/** Rebuilds a game with full move history (needed for undo and repetition detection). */
+function cloneGame(source: Chess): Chess {
+  const copy = new Chess();
+  for (const san of source.history()) copy.move(san);
+  return copy;
+}
+
+/** Restores a saved game by replaying its moves; falls back to the bare FEN. */
+function restoreGame(state: ActiveGameState): Chess | null {
+  try {
+    const replayed = new Chess();
+    for (const san of state.moves) replayed.move(san);
+    if (replayed.fen() === state.fen) return replayed;
+    return new Chess(state.fen);
+  } catch {
+    return null;
+  }
+}
+
+function playMoveSounds(isCapture: boolean, givesCheck: boolean) {
+  if (isCapture) sound.playCapture();
+  else sound.playMove();
+  if (givesCheck) sound.playCheck();
+}
+
+function getModeTitle(mode: GameMode): string {
+  if (mode === 'assisted') return 'Partita Assistita';
+  if (mode === 'didactic') return 'Partita Didattica';
+  if (mode === 'quick') return 'Partita Veloce';
+  return 'Partita Libera';
+}
+
+function describeDraw(chess: Chess): string {
+  if (chess.isStalemate()) return 'Patta per Stallo';
+  if (chess.isThreefoldRepetition()) return 'Patta per ripetizione di mosse';
+  if (chess.isInsufficientMaterial()) return 'Patta per materiale insufficiente';
+  return 'Partita patta';
+}
+
+function describeComputerMove(san: string, isCapture: boolean, to: string): string {
+  if (isCapture) return `L'avversario ha catturato in ${to}. Osserva come risponde il tuo esercito!`;
+  if (san.includes('O-O')) return "L'avversario ha eseguito l'arrocco per mettere al sicuro il proprio Re.";
+  return `Mossa avversaria: ${san}. Tocca a te riflettere con calma.`;
 }
 
 export const PlayView: React.FC<PlayViewProps> = ({
@@ -43,9 +108,9 @@ export const PlayView: React.FC<PlayViewProps> = ({
 }) => {
   // Game setup states
   const [inGame, setInGame] = useState(false);
-  const [gameMode, setGameMode] = useState<'free' | 'assisted' | 'didactic' | 'quick'>('assisted');
+  const [gameMode, setGameMode] = useState<GameMode>('assisted');
   const [difficultyLevel, setDifficultyLevel] = useState<number>(2);
-  const [playerColor, setPlayerColor] = useState<'w' | 'b'>('w');
+  const [playerColor, setPlayerColor] = useState<Side>('w');
 
   // Active game chess instance
   const [game, setGame] = useState<Chess>(() => new Chess());
@@ -53,7 +118,7 @@ export const PlayView: React.FC<PlayViewProps> = ({
   const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
   const [gameStatus, setGameStatus] = useState<string>('Partita in corso');
   const [isGameOver, setIsGameOver] = useState(false);
-  const [gameResult, setGameResult] = useState<'win' | 'loss' | 'draw' | null>(null);
+  const [gameResult, setGameResult] = useState<FinishedResult | null>(null);
 
   // Assistance toggles
   const [showLegalMoves, setShowLegalMoves] = useState(true);
@@ -75,180 +140,132 @@ export const PlayView: React.FC<PlayViewProps> = ({
   // Audio / thinking state
   const [isThinking, setIsThinking] = useState(false);
 
-  // Auto-save key for in-progress games
-  const ACTIVE_GAME_KEY = 'chess_academy_active_game_state';
+  // Owner of the pending "computer is thinking" timer: always released on reset/unmount.
+  const computerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Check if there is an in-progress game to resume
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(ACTIVE_GAME_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && parsed.fen && !parsed.isGameOver) {
-          const loadedGame = new Chess(parsed.fen);
-          setGame(loadedGame);
-          setGameMode(parsed.mode || 'assisted');
-          setDifficultyLevel(parsed.level || 2);
-          setPlayerColor(parsed.playerColor || 'w');
-          setMoveHistory(parsed.moves || []);
-          setFenHistory(parsed.fens || [new Chess().fen()]);
-          setInGame(true);
-        }
-      }
-    } catch {
-      // Ignore parse errors
+  const cancelComputerTimer = useCallback(() => {
+    if (computerTimer.current !== null) {
+      clearTimeout(computerTimer.current);
+      computerTimer.current = null;
     }
+    setIsThinking(false);
   }, []);
 
-  // Save active game to localStorage
-  const persistActiveGame = (currentGame: Chess, finished = false) => {
-    if (finished) {
-      localStorage.removeItem(ACTIVE_GAME_KEY);
-      return;
-    }
-    const state = {
-      fen: currentGame.fen(),
-      mode: gameMode,
-      level: difficultyLevel,
-      playerColor,
-      moves: moveHistory,
-      fens: fenHistory,
-      isGameOver: false,
-    };
-    try {
-      localStorage.setItem(ACTIVE_GAME_KEY, JSON.stringify(state));
-    } catch {
-      // Ignore
-    }
+  useEffect(() => cancelComputerTimer, [cancelComputerTimer]);
+
+  const currentContext = (): GameContext => ({
+    mode: gameMode,
+    level: difficultyLevel,
+    playerColor,
+    moves: moveHistory,
+    fens: fenHistory,
+  });
+
+  const persistActiveGame = (chess: Chess, ctx: GameContext) => {
+    saveActiveGame({
+      fen: chess.fen(),
+      mode: ctx.mode,
+      level: ctx.level,
+      playerColor: ctx.playerColor,
+      moves: ctx.moves,
+      fens: ctx.fens,
+    });
   };
 
-  const startNewGame = (mode = gameMode, level = difficultyLevel, color = playerColor) => {
-    const finalColor = color === 'b' ? 'b' : color === 'w' ? 'w' : Math.random() < 0.5 ? 'w' : 'b';
-    const newChess = new Chess();
-    setGame(newChess);
-    setGameMode(mode);
-    setDifficultyLevel(level);
-    setPlayerColor(finalColor);
-    setSelectedSquare(null);
-    setLastMove(null);
-    setGameStatus('Partita in corso');
-    setIsGameOver(false);
-    setGameResult(null);
-    setSuggestedMove(null);
-    setTutorMessage(null);
-    setBlunderWarning(null);
-    setMoveHistory([]);
-    setFenHistory([newChess.fen()]);
-    setInGame(true);
-
-    if (mode === 'assisted') {
-      setShowLegalMoves(true);
-      setHighlightThreats(true);
-      setBlunderPrevention(true);
-    } else if (mode === 'didactic') {
-      setShowLegalMoves(true);
-      setHighlightThreats(true);
-      setBlunderPrevention(true);
-      setTutorMessage('Inizia sviluppando i pedoni centrali (e4 o d4) e porta in gioco Cavalli e Alfieri!');
-    } else {
-      setShowLegalMoves(false);
-      setHighlightThreats(false);
-      setBlunderPrevention(false);
-    }
-
-    // If player is Black, computer moves first
-    if (finalColor === 'b') {
-      setTimeout(() => {
-        executeComputerTurn(newChess, level);
-      }, 600);
-    }
+  const applyAssistanceDefaults = (mode: GameMode) => {
+    const assisted = BLUNDER_GUARDED_MODES.includes(mode);
+    setShowLegalMoves(assisted);
+    setHighlightThreats(assisted);
+    setBlunderPrevention(assisted);
+    setTutorMessage(
+      mode === 'didactic'
+        ? 'Inizia sviluppando i pedoni centrali (e4 o d4) e porta in gioco Cavalli e Alfieri!'
+        : null
+    );
   };
 
-  const executeComputerTurn = (currentChess: Chess, lvl: number) => {
+  const executeComputerTurn = (chess: Chess, ctx: GameContext, delayMs = 0) => {
+    cancelComputerTimer();
     setIsThinking(true);
-    setTimeout(() => {
-      const compMove = getComputerMove(currentChess, lvl);
-      if (compMove) {
-        const isCapture = !!currentChess.get(compMove.to as Square);
-        const played = currentChess.move({ from: compMove.from, to: compMove.to, promotion: 'q' });
-        const newFen = currentChess.fen();
+    const thinkMs = delayMs + COMPUTER_THINK_MIN_MS + Math.random() * COMPUTER_THINK_JITTER_MS;
 
-        if (isCapture) sound.playCapture();
-        else sound.playMove();
-
-        if (currentChess.isCheck()) sound.playCheck();
-
-        setLastMove({ from: compMove.from, to: compMove.to });
-        setGame(new Chess(newFen));
-        setMoveHistory((prev) => [...prev, played.san]);
-        setFenHistory((prev) => [...prev, newFen]);
-
-        // Didactic commentary on computer's move
-        if (gameMode === 'didactic') {
-          if (isCapture) {
-            setTutorMessage(`L'avversario ha catturato in ${compMove.to}. Osserva come risponde il tuo esercito!`);
-          } else if (compMove.san.includes('O-O')) {
-            setTutorMessage("L'avversario ha eseguito l'arrocco per mettere al sicuro il proprio Re.");
-          } else {
-            setTutorMessage(`Mossa avversaria: ${compMove.san}. Tocca a te riflettere con calma.`);
-          }
-        }
-
-        checkGameEndState(currentChess);
+    computerTimer.current = setTimeout(() => {
+      computerTimer.current = null;
+      const compMove = getComputerMove(chess, ctx.level);
+      if (!compMove) {
+        setIsThinking(false);
+        return;
       }
+
+      const isCapture = !!chess.get(compMove.to as Square);
+      const nextGame = cloneGame(chess);
+      const played = nextGame.move({ from: compMove.from, to: compMove.to, promotion: 'q' });
+      const nextCtx: GameContext = {
+        ...ctx,
+        moves: [...ctx.moves, played.san],
+        fens: [...ctx.fens, nextGame.fen()],
+      };
+
+      playMoveSounds(isCapture, nextGame.isCheck());
+
+      setLastMove({ from: compMove.from, to: compMove.to });
+      setGame(nextGame);
+      setMoveHistory(nextCtx.moves);
+      setFenHistory(nextCtx.fens);
+      if (ctx.mode === 'didactic') {
+        setTutorMessage(describeComputerMove(compMove.san, isCapture, compMove.to));
+      }
+
+      if (!checkGameEndState(nextGame, nextCtx)) persistActiveGame(nextGame, nextCtx);
       setIsThinking(false);
-    }, 400 + Math.random() * 300);
+    }, thinkMs);
   };
 
-  const checkGameEndState = (chessInstance: Chess) => {
-    if (chessInstance.isCheckmate()) {
+  const checkGameEndState = (chess: Chess, ctx: GameContext): boolean => {
+    if (chess.isCheckmate()) {
+      const playerLost = chess.turn() === ctx.playerColor;
       setIsGameOver(true);
-      const isPlayerTurn = chessInstance.turn() === playerColor;
-      if (isPlayerTurn) {
+      if (playerLost) {
         setGameStatus('Scacco Matto! Ha vinto il computer.');
         setGameResult('loss');
         sound.playError();
-        finalizeGame(chessInstance, 'loss', 'Scacco matto subito');
+        finalizeGame(chess, ctx, 'loss', 'Scacco matto subito');
       } else {
         setGameStatus('Scacco Matto! Hai vinto la partita! 🎉');
         setGameResult('win');
         sound.playVictory();
         confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
-        finalizeGame(chessInstance, 'win', 'Scacco matto inflitto');
+        finalizeGame(chess, ctx, 'win', 'Scacco matto inflitto');
       }
       return true;
     }
 
-    if (chessInstance.isDraw()) {
+    if (chess.isDraw()) {
+      const reason = describeDraw(chess);
       setIsGameOver(true);
-      let reason = 'Partita patta';
-      if (chessInstance.isStalemate()) reason = 'Patta per Stallo';
-      else if (chessInstance.isThreefoldRepetition()) reason = 'Patta per ripetizione di mosse';
-      else if (chessInstance.isInsufficientMaterial()) reason = 'Patta per materiale insufficiente';
-
       setGameStatus(reason);
       setGameResult('draw');
       sound.playSuccess();
-      finalizeGame(chessInstance, 'draw', reason);
+      finalizeGame(chess, ctx, 'draw', reason);
       return true;
     }
 
     return false;
   };
 
-  const finalizeGame = (finalChess: Chess, res: 'win' | 'loss' | 'draw', reason: string) => {
-    persistActiveGame(finalChess, true);
+  const finalizeGame = (chess: Chess, ctx: GameContext, res: FinishedResult, reason: string) => {
+    clearActiveGame();
 
     const savedRecord: SavedGame = {
       id: `game-${Date.now()}`,
       date: new Date().toLocaleDateString('it-IT', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
-      mode: gameMode,
-      level: difficultyLevel,
-      playerColor,
+      mode: ctx.mode,
+      level: ctx.level,
+      playerColor: ctx.playerColor,
       result: res,
-      moves: moveHistory,
-      fens: fenHistory,
-      finalFen: finalChess.fen(),
+      moves: ctx.moves,
+      fens: ctx.fens,
+      finalFen: chess.fen(),
       reason,
     };
 
@@ -259,7 +276,7 @@ export const PlayView: React.FC<PlayViewProps> = ({
       if (isWin && !newBadges.includes('Prima Vittoria')) {
         newBadges.push('Prima Vittoria');
       }
-      if (difficultyLevel >= 4 && isWin && !newBadges.includes('Maestro Tattico')) {
+      if (ctx.level >= 4 && isWin && !newBadges.includes('Maestro Tattico')) {
         newBadges.push('Maestro Tattico');
       }
 
@@ -271,27 +288,102 @@ export const PlayView: React.FC<PlayViewProps> = ({
         gamesLost: prev.gamesLost + (res === 'loss' ? 1 : 0),
         totalTimeMinutes: prev.totalTimeMinutes + 10,
         unlockedBadges: newBadges,
-        savedGames: [savedRecord, ...prev.savedGames.slice(0, 19)],
+        savedGames: [savedRecord, ...prev.savedGames.slice(0, MAX_SAVED_GAMES - 1)],
         lastActivity: {
           type: 'game',
-          title: `Partita ${isWin ? 'Vinta' : isDraw ? 'Patta' : 'Persa'} (Livello ${difficultyLevel})`,
+          title: `Partita ${isWin ? 'Vinta' : isDraw ? 'Patta' : 'Persa'} (Livello ${ctx.level})`,
           timestamp: Date.now(),
         },
       };
     });
   };
 
+  const startNewGame = (mode: GameMode = gameMode, level = difficultyLevel, color: Side = playerColor) => {
+    cancelComputerTimer();
+    const newChess = new Chess();
+    const ctx: GameContext = { mode, level, playerColor: color, moves: [], fens: [newChess.fen()] };
+
+    setGame(newChess);
+    setGameMode(mode);
+    setDifficultyLevel(level);
+    setPlayerColor(color);
+    setSelectedSquare(null);
+    setLastMove(null);
+    setGameStatus('Partita in corso');
+    setIsGameOver(false);
+    setGameResult(null);
+    setSuggestedMove(null);
+    setBlunderWarning(null);
+    setMoveHistory(ctx.moves);
+    setFenHistory(ctx.fens);
+    applyAssistanceDefaults(mode);
+    setInGame(true);
+    clearActiveGame();
+
+    // If player is Black, computer moves first
+    if (color === 'b') executeComputerTurn(newChess, ctx, COMPUTER_OPENING_DELAY_MS - COMPUTER_THINK_MIN_MS);
+  };
+
+  // Resume an in-progress game saved by a previous session (mount only)
+  useEffect(() => {
+    const saved = loadActiveGame();
+    if (!saved) return;
+    const restored = restoreGame(saved);
+    if (!restored || restored.isGameOver()) {
+      clearActiveGame();
+      return;
+    }
+
+    setGame(restored);
+    setGameMode(saved.mode);
+    setDifficultyLevel(saved.level);
+    setPlayerColor(saved.playerColor);
+    setMoveHistory(saved.moves);
+    setFenHistory(saved.fens.length > 0 ? saved.fens : [restored.fen()]);
+    applyAssistanceDefaults(saved.mode);
+    setInGame(true);
+
+    if (restored.turn() !== saved.playerColor) {
+      executeComputerTurn(restored, {
+        mode: saved.mode,
+        level: saved.level,
+        playerColor: saved.playerColor,
+        moves: saved.moves,
+        fens: saved.fens,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Validates a player move and either asks for confirmation (blunder) or plays it. */
+  const attemptPlayerMove = (from: string, to: string) => {
+    if (isGameOver || isThinking) return;
+    if (game.turn() !== playerColor) return;
+    const isLegal = game.moves({ square: from as Square, verbose: true }).some((m) => m.to === to);
+    if (!isLegal) return;
+
+    if (blunderPrevention && BLUNDER_GUARDED_MODES.includes(gameMode)) {
+      const blunderCheck = analyzeMoveQuality(game, { from, to });
+      if (blunderCheck.isBlunder && blunderCheck.warning) {
+        setBlunderWarning({ pendingMove: { from, to }, message: blunderCheck.warning });
+        return;
+      }
+    }
+
+    executePlayerMove(from, to);
+  };
+
   const handleSquareClick = (square: string) => {
     if (isGameOver || isThinking) return;
     if (game.turn() !== playerColor) return;
 
+    const clickedPiece = game.get(square as Square);
+    const ownsClicked = !!clickedPiece && clickedPiece.color === playerColor;
+
     if (!selectedSquare) {
-      // Select square if it belongs to player
-      const piece = game.get(square as Square);
-      if (piece && piece.color === playerColor) {
-        setSelectedSquare(square);
-        setSuggestedMove(null);
-      }
+      if (!ownsClicked) return;
+      setSelectedSquare(square);
+      setSuggestedMove(null);
       return;
     }
 
@@ -300,388 +392,116 @@ export const PlayView: React.FC<PlayViewProps> = ({
       return;
     }
 
-    // Attempting move from selectedSquare to square
-    const legalMoves = game.moves({ square: selectedSquare as Square, verbose: true });
-    const targetMove = legalMoves.find((m) => m.to === square);
-
-    if (!targetMove) {
-      // If clicking another of player's own pieces, switch selection
-      const otherPiece = game.get(square as Square);
-      if (otherPiece && otherPiece.color === playerColor) {
-        setSelectedSquare(square);
-      } else {
-        setSelectedSquare(null);
-      }
+    const isLegalTarget = game
+      .moves({ square: selectedSquare as Square, verbose: true })
+      .some((m) => m.to === square);
+    if (!isLegalTarget) {
+      setSelectedSquare(ownsClicked ? square : null);
       return;
     }
 
-    // Assisted mode: check for blunder before executing
-    if (blunderPrevention && (gameMode === 'assisted' || gameMode === 'didactic')) {
-      const blunderCheck = analyzeMoveQuality(game, { from: selectedSquare, to: square });
-      if (blunderCheck.isBlunder && blunderCheck.warning) {
-        setBlunderWarning({
-          pendingMove: { from: selectedSquare, to: square },
-          message: blunderCheck.warning,
-        });
-        return;
-      }
-    }
-
-    // Execute player move
-    executePlayerMove(selectedSquare, square);
+    attemptPlayerMove(selectedSquare, square);
   };
 
   const executePlayerMove = (from: string, to: string) => {
     setBlunderWarning(null);
     const isCapture = !!game.get(to as Square);
-    const played = game.move({ from: from as Square, to: to as Square, promotion: 'q' });
-    const newFen = game.fen();
+    const working = cloneGame(game);
+    const played = working.move({ from: from as Square, to: to as Square, promotion: 'q' });
+    const ctx: GameContext = {
+      ...currentContext(),
+      moves: [...moveHistory, played.san],
+      fens: [...fenHistory, working.fen()],
+    };
 
-    if (isCapture) sound.playCapture();
-    else sound.playMove();
+    playMoveSounds(isCapture, working.isCheck());
 
-    if (game.isCheck()) sound.playCheck();
-
+    setGame(working);
     setLastMove({ from, to });
     setSelectedSquare(null);
     setSuggestedMove(null);
+    setMoveHistory(ctx.moves);
+    setFenHistory(ctx.fens);
 
-    const updatedMoves = [...moveHistory, played.san];
-    const updatedFens = [...fenHistory, newFen];
-    setMoveHistory(updatedMoves);
-    setFenHistory(updatedFens);
-
-    persistActiveGame(game);
-
-    const ended = checkGameEndState(game);
-    if (!ended) {
-      executeComputerTurn(game, difficultyLevel);
-    }
+    if (checkGameEndState(working, ctx)) return;
+    persistActiveGame(working, ctx);
+    executeComputerTurn(working, ctx);
   };
 
   const handleUndo = () => {
     if (isGameOver || isThinking || moveHistory.length === 0) return;
 
     // In a human vs engine game, undo 2 moves (computer's and player's)
-    const undoCount = game.turn() === playerColor ? 2 : 1;
-    for (let i = 0; i < undoCount; i++) {
-      if (game.history().length > 0) {
-        game.undo();
-      }
-    }
+    const undoCount = Math.min(game.turn() === playerColor ? 2 : 1, moveHistory.length);
+    const working = cloneGame(game);
+    for (let i = 0; i < undoCount; i++) working.undo();
 
-    const newFen = game.fen();
-    setGame(new Chess(newFen));
+    const ctx: GameContext = {
+      ...currentContext(),
+      moves: moveHistory.slice(0, moveHistory.length - undoCount),
+      fens: fenHistory.slice(0, Math.max(1, fenHistory.length - undoCount)),
+    };
+
+    setGame(working);
     setSelectedSquare(null);
     setSuggestedMove(null);
     setTutorMessage(null);
     setBlunderWarning(null);
-    setMoveHistory((prev) => prev.slice(0, Math.max(0, prev.length - undoCount)));
-    setFenHistory((prev) => prev.slice(0, Math.max(1, prev.length - undoCount)));
-    persistActiveGame(game);
+    setLastMove(null);
+    setMoveHistory(ctx.moves);
+    setFenHistory(ctx.fens);
+    persistActiveGame(working, ctx);
     sound.playMove();
   };
 
   const handleResign = () => {
     if (isGameOver) return;
+    cancelComputerTimer();
     setIsGameOver(true);
     setGameStatus('Hai abbandonato la partita.');
     setGameResult('loss');
-    finalizeGame(game, 'loss', 'Abbandono');
+    finalizeGame(game, currentContext(), 'loss', 'Abbandono');
   };
 
   const handleRequestHint = () => {
     if (isGameOver || isThinking || game.turn() !== playerColor) return;
     const hint = getTutorHint(game);
-    if (hint) {
-      setSuggestedMove({ from: hint.from, to: hint.to });
-      setTutorMessage(hint.explanation);
-      sound.playSuccess();
-    }
+    if (!hint) return;
+    setSuggestedMove({ from: hint.from, to: hint.to });
+    setTutorMessage(hint.explanation);
+    sound.playSuccess();
   };
 
   // Compute legal moves for the selected piece
-  let legalMoveOptions: MoveOption[] = [];
-  if (selectedSquare && showLegalMoves) {
-    const moves = game.moves({ square: selectedSquare as Square, verbose: true });
-    legalMoveOptions = moves.map((m) => ({
-      to: m.to,
-      isCapture: !!m.captured,
-      san: m.san,
-    }));
-  }
+  const legalMoveOptions: MoveOption[] =
+    selectedSquare && showLegalMoves
+      ? game.moves({ square: selectedSquare as Square, verbose: true }).map((m) => ({
+          to: m.to,
+          isCapture: !!m.captured,
+          san: m.san,
+        }))
+      : [];
 
   // Threatened squares in assisted mode
-  const threatenedSquares = highlightThreats && (gameMode === 'assisted' || gameMode === 'didactic')
-    ? getThreatenedSquares(game, playerColor)
-    : [];
+  const threatenedSquares =
+    highlightThreats && BLUNDER_GUARDED_MODES.includes(gameMode)
+      ? getThreatenedSquares(game, playerColor)
+      : [];
 
-  // King check square
-  const checkSquare = game.isCheck()
-    ? (() => {
-        const board = game.board();
-        for (let r = 0; r < 8; r++) {
-          for (let c = 0; c < 8; c++) {
-            const piece = board[r][c];
-            if (piece && piece.type === 'k' && piece.color === game.turn()) {
-              return `${String.fromCharCode(97 + c)}${8 - r}`;
-            }
-          }
-        }
-        return null;
-      })()
-    : null;
+  const checkSquare = game.isCheck() ? findKingSquare(game, game.turn()) : null;
+  const capturedPieces = getLostPieces(game) as { whiteLost: PieceType[]; blackLost: PieceType[] };
+  const materialAdvantage = getMaterialDifference(game);
 
-  // Captured pieces calculation
-  const capturedPieces = (() => {
-    const initialCounts: Record<string, number> = { p: 8, n: 2, b: 2, r: 2, q: 1 };
-    const currentCounts: Record<string, number> = {
-      wp: 0, wn: 0, wb: 0, wr: 0, wq: 0,
-      bp: 0, bn: 0, bb: 0, br: 0, bq: 0,
-    };
-
-    const board = game.board();
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        const p = board[r][c];
-        if (p && p.type !== 'k') {
-          currentCounts[`${p.color}${p.type}`]++;
-        }
-      }
-    }
-
-    const whiteLost: PieceType[] = [];
-    const blackLost: PieceType[] = [];
-
-    (['p', 'n', 'b', 'r', 'q'] as PieceType[]).forEach((t) => {
-      const wDeficit = initialCounts[t] - currentCounts[`w${t}`];
-      for (let i = 0; i < wDeficit; i++) whiteLost.push(t);
-      const bDeficit = initialCounts[t] - currentCounts[`b${t}`];
-      for (let i = 0; i < bDeficit; i++) blackLost.push(t);
-    });
-
-    return { whiteLost, blackLost };
-  })();
-
-  // Material evaluation difference
-  const materialAdvantage = (() => {
-    let wScore = 0;
-    let bScore = 0;
-    const board = game.board();
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        const p = board[r][c];
-        if (p && p.type !== 'k') {
-          if (p.color === 'w') wScore += PIECE_VALUES[p.type] || 0;
-          else bScore += PIECE_VALUES[p.type] || 0;
-        }
-      }
-    }
-    const diff = (wScore - bScore) / 100;
-    return diff;
-  })();
-
-  // If NOT in active game, show Game Setup / Mode Selector Screen
   if (!inGame) {
     return (
-      <div className="max-w-4xl mx-auto space-y-8 pb-12">
-        {/* Header */}
-        <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
-            <Swords className="w-3.5 h-3.5" />
-            <span>Sfida il Computer</span>
-          </div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-white mt-2 font-serif">
-            Gioca una Partita
-          </h1>
-          <p className="text-sm sm:text-base text-slate-300 mt-1 max-w-2xl leading-relaxed">
-            Scegli tra quattro modalità create per il puro piacere di giocare, senza fretta né ansia da prestazione.
-          </p>
-        </div>
-
-        {/* 4 Game Modes Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {/* Mode 1: Partita Assistita */}
-          <div
-            onClick={() => {
-              setGameMode('assisted');
-              startNewGame('assisted', difficultyLevel, playerColor);
-            }}
-            className="group p-5 rounded-2xl bg-gradient-to-br from-emerald-950/40 via-slate-900 to-slate-900 border border-emerald-500/40 hover:border-emerald-400 p-6 cursor-pointer transition shadow-xl hover:-translate-y-0.5"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold">
-                Consigliata per te
-              </span>
-              <Sparkles className="w-5 h-5 text-emerald-400" />
-            </div>
-            <h3 className="text-lg font-bold text-white mt-3 font-serif group-hover:text-emerald-300 transition-colors">
-              Partita Assistita
-            </h3>
-            <p className="text-xs sm:text-sm text-slate-400 mt-1 leading-relaxed">
-              Hai al tuo fianco un maestro discreto: evidenzia le mosse legali, segnala i pezzi minacciati e ti avvisa prima di un errore grave.
-            </p>
-            <div className="mt-4 flex items-center gap-2 text-xs font-bold text-emerald-400">
-              <span>Inizia Assistita</span>
-              <ChevronRight className="w-4 h-4" />
-            </div>
-          </div>
-
-          {/* Mode 2: Partita Libera */}
-          <div
-            onClick={() => {
-              setGameMode('free');
-              startNewGame('free', difficultyLevel, playerColor);
-            }}
-            className="group p-5 rounded-2xl bg-slate-900 border border-slate-800 hover:border-amber-500/50 p-6 cursor-pointer transition shadow-xl hover:-translate-y-0.5"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 font-medium">
-                Classica
-              </span>
-              <Swords className="w-5 h-5 text-amber-400" />
-            </div>
-            <h3 className="text-lg font-bold text-white mt-3 font-serif group-hover:text-amber-300 transition-colors">
-              Partita Libera
-            </h3>
-            <p className="text-xs sm:text-sm text-slate-400 mt-1 leading-relaxed">
-              Scacchi puri al 100%: nessun limite di tempo, possibilità di annullare qualsiasi mossa e salvataggio automatico.
-            </p>
-            <div className="mt-4 flex items-center gap-2 text-xs font-bold text-amber-400">
-              <span>Inizia Partita Libera</span>
-              <ChevronRight className="w-4 h-4" />
-            </div>
-          </div>
-
-          {/* Mode 3: Partita Didattica */}
-          <div
-            onClick={() => {
-              setGameMode('didactic');
-              startNewGame('didactic', difficultyLevel, playerColor);
-            }}
-            className="group p-5 rounded-2xl bg-slate-900 border border-slate-800 hover:border-purple-500/50 p-6 cursor-pointer transition shadow-xl hover:-translate-y-0.5"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-purple-300 font-medium">
-                Impara Giocando
-              </span>
-              <Lightbulb className="w-5 h-5 text-purple-400" />
-            </div>
-            <h3 className="text-lg font-bold text-white mt-3 font-serif group-hover:text-purple-300 transition-colors">
-              Partita Didattica
-            </h3>
-            <p className="text-xs sm:text-sm text-slate-400 mt-1 leading-relaxed">
-              Il computer commenta le posizioni chiave ("Attenzione al cavallo!", "Ottima spinta al centro") aiutandoti a capire la strategia.
-            </p>
-            <div className="mt-4 flex items-center gap-2 text-xs font-bold text-purple-400">
-              <span>Inizia Didattica</span>
-              <ChevronRight className="w-4 h-4" />
-            </div>
-          </div>
-
-          {/* Mode 4: Partita Veloce */}
-          <div
-            onClick={() => {
-              setGameMode('quick');
-              startNewGame('quick', 2, 'w');
-            }}
-            className="group p-5 rounded-2xl bg-slate-900 border border-slate-800 hover:border-cyan-500/50 p-6 cursor-pointer transition shadow-xl hover:-translate-y-0.5"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-cyan-300 font-medium">
-                Un Click
-              </span>
-              <Play className="w-5 h-5 text-cyan-400" />
-            </div>
-            <h3 className="text-lg font-bold text-white mt-3 font-serif group-hover:text-cyan-300 transition-colors">
-              Partita Veloce
-            </h3>
-            <p className="text-xs sm:text-sm text-slate-400 mt-1 leading-relaxed">
-              Via subito! Avversario facile, nessun menu di configurazione, pronti a giocare in un solo secondo.
-            </p>
-            <div className="mt-4 flex items-center gap-2 text-xs font-bold text-cyan-400">
-              <span>Avvia Veloce</span>
-              <ChevronRight className="w-4 h-4" />
-            </div>
-          </div>
-        </div>
-
-        {/* Custom Configuration Section */}
-        <div className="p-6 rounded-3xl bg-slate-900/60 border border-slate-800 space-y-6">
-          <div className="flex items-center gap-2 text-base font-bold text-white">
-            <Sliders className="w-5 h-5 text-amber-400" />
-            <span>Configurazione Partita Personalizzata</span>
-          </div>
-
-          {/* Difficulty Levels */}
-          <div className="space-y-3">
-            <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Livello Avversario Computer:
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5">
-              {[
-                { lvl: 1, name: 'Assoluto', desc: 'Errori frequenti' },
-                { lvl: 2, name: 'Principiante', desc: 'Semplice' },
-                { lvl: 3, name: 'Facile', desc: 'Difesa base' },
-                { lvl: 4, name: 'Intermedio', desc: 'Ragionato' },
-                { lvl: 5, name: 'Avanzato', desc: 'Impegnativo' },
-                { lvl: 6, name: 'Esperto', desc: 'Massima forza' },
-              ].map((item) => (
-                <button
-                  key={item.lvl}
-                  onClick={() => setDifficultyLevel(item.lvl)}
-                  className={`p-3 rounded-xl border text-left transition cursor-pointer ${
-                    difficultyLevel === item.lvl
-                      ? 'bg-amber-500/20 border-amber-400 text-white shadow-md'
-                      : 'bg-slate-800/80 border-slate-700/80 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <div className="text-xs font-bold">Livello {item.lvl}</div>
-                  <div className="text-xs font-semibold mt-0.5 text-amber-300">{item.name}</div>
-                  <div className="text-[10px] text-slate-400 mt-1 truncate">{item.desc}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Piece Color Choice */}
-          <div className="space-y-3">
-            <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Scegli con che colore giocare:
-            </div>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setPlayerColor('w')}
-                className={`flex-1 flex items-center justify-center gap-2.5 py-3 rounded-xl border font-bold text-sm transition cursor-pointer ${
-                  playerColor === 'w'
-                    ? 'bg-white text-slate-900 border-amber-400 shadow-md'
-                    : 'bg-slate-800 text-slate-300 border-slate-700'
-                }`}
-              >
-                <span>⚪ Bianchi (Muovi per primo)</span>
-              </button>
-              <button
-                onClick={() => setPlayerColor('b')}
-                className={`flex-1 flex items-center justify-center gap-2.5 py-3 rounded-xl border font-bold text-sm transition cursor-pointer ${
-                  playerColor === 'b'
-                    ? 'bg-slate-950 text-white border-amber-400 shadow-md ring-1 ring-amber-400'
-                    : 'bg-slate-800 text-slate-300 border-slate-700'
-                }`}
-              >
-                <span>⚫ Neri (Rispondi al computer)</span>
-              </button>
-            </div>
-          </div>
-
-          <button
-            onClick={() => startNewGame()}
-            className="w-full flex items-center justify-center gap-3 py-4 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 font-bold text-base shadow-xl hover:from-amber-400 hover:to-amber-500 transition cursor-pointer"
-          >
-            <Play className="w-5 h-5 fill-slate-950" />
-            <span>Comincia Partita Ora</span>
-          </button>
-        </div>
-      </div>
+      <PlaySetup
+        gameMode={gameMode}
+        difficultyLevel={difficultyLevel}
+        playerColor={playerColor}
+        onDifficultyChange={setDifficultyLevel}
+        onColorChange={setPlayerColor}
+        onStart={startNewGame}
+      />
     );
   }
 
@@ -699,13 +519,7 @@ export const PlayView: React.FC<PlayViewProps> = ({
           </button>
           <div>
             <span className="text-xs font-bold text-amber-400 uppercase tracking-wide">
-              {gameMode === 'assisted'
-                ? 'Partita Assistita'
-                : gameMode === 'didactic'
-                ? 'Partita Didattica'
-                : gameMode === 'quick'
-                ? 'Partita Veloce'
-                : 'Partita Libera'}
+              {getModeTitle(gameMode)}
             </span>
             <span className="text-xs text-slate-400 ml-2">
               (Computer Liv. {difficultyLevel})
@@ -769,25 +583,7 @@ export const PlayView: React.FC<PlayViewProps> = ({
             pieceTheme={progress.profile?.pieceTheme}
             showCoordinates={progress.profile?.showCoordinates ?? true}
             onSquareClick={handleSquareClick}
-            onMove={(from, to) => {
-              if (isGameOver || isThinking) return;
-              if (game.turn() !== playerColor) return;
-              const legal = game.moves({ square: from as Square, verbose: true });
-              const target = legal.find((m) => m.to === to);
-              if (!target) return;
-
-              if (blunderPrevention && (gameMode === 'assisted' || gameMode === 'didactic')) {
-                const blunderCheck = analyzeMoveQuality(game, { from, to });
-                if (blunderCheck.isBlunder && blunderCheck.warning) {
-                  setBlunderWarning({
-                    pendingMove: { from, to },
-                    message: blunderCheck.warning,
-                  });
-                  return;
-                }
-              }
-              executePlayerMove(from, to);
-            }}
+            onMove={attemptPlayerMove}
             interactive={!isGameOver && !isThinking}
           />
 
